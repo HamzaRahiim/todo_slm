@@ -1,4 +1,3 @@
-
 import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -79,8 +78,26 @@ def update_todo(todo_id: int, updated_todo: Todo):
     raise HTTPException(status_code=404, detail="Todo not found")
 
 # AI Helper Functions
+def call_phi3_local(prompt: str) -> str:
+    """Try to call local Ollama first"""
+    try:
+        response = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "phi3",
+                "prompt": prompt,
+                "stream": False
+            },
+            timeout=5
+        )
+        if response.status_code == 200:
+            return response.json()["response"]
+    except:
+        pass
+    return None
+
 def call_phi3_mock(prompt: str) -> str:
-    """Mock AI response since Ollama isn't available in cloud"""
+    """Mock AI response for cloud deployment"""
     if "add" in prompt.lower() or "create" in prompt.lower():
         return "Great! I've noted that down for you. That sounds like an important task!"
     elif "list" in prompt.lower() or "show" in prompt.lower():
@@ -89,6 +106,16 @@ def call_phi3_mock(prompt: str) -> str:
         return "Awesome! Well done on completing that task. Keep up the good work!"
     else:
         return "I'm here to help you stay organized and productive! What would you like to work on today?"
+
+def call_phi3(prompt: str) -> str:
+    """Smart AI caller - tries local Ollama first, falls back to mock"""
+    # Try local Ollama first (for development)
+    local_response = call_phi3_local(prompt)
+    if local_response:
+        return local_response
+    
+    # Fallback to mock (for production)
+    return call_phi3_mock(prompt)
 
 def extract_todo_info(text: str) -> dict:
     """Extract todo information from natural language"""
@@ -180,7 +207,7 @@ def chat_with_ai(request: ChatRequest):
                 todo.completed = True
                 updated_todo = update_todo(todo_id, todo)
                 return ChatResponse(
-                    response=f"Awesome! I've marked '{updated_todo.title}' as completed! ????",
+                    response=f"Awesome! I've marked '{updated_todo.title}' as completed! 🎉",
                     action_performed="complete_todo",
                     todos_affected=[updated_todo]
                 )
@@ -194,7 +221,12 @@ def chat_with_ai(request: ChatRequest):
             )
     
     else:
-        ai_response = call_phi3_mock(request.message)
+        context = f"""
+        You are a helpful assistant for a todo application. The user said: "{request.message}"
+        Current todos in the system: {len(todos)} todos
+        You can help users with managing their tasks effectively.
+        """
+        ai_response = call_phi3(context)
         return ChatResponse(response=ai_response)
 
 # Serve static files
@@ -204,20 +236,38 @@ def serve_frontend():
     try:
         return FileResponse('frontend.html')
     except:
-        return {"message": "AI Todo App is running!", "docs": "/docs"}
+        return {"message": "AI Todo App is running!", "environment": "production" if os.environ.get("PORT") else "development"}
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "todos_count": len(todos), "port": os.environ.get("PORT", "8000")}
+    return {
+        "status": "healthy", 
+        "todos_count": len(todos), 
+        "environment": "production" if os.environ.get("PORT") else "development",
+        "ollama_available": call_phi3_local("test") is not None
+    }
 
-# This is CRITICAL for Railway
+# Smart host/port configuration for both environments
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    print(f"Starting server on port {port}")
+    
+    # Check if running in production (Railway sets PORT env var)
+    is_production = os.environ.get("PORT") is not None
+    
+    if is_production:
+        # Production configuration (Railway, Render, etc.)
+        port = int(os.environ.get("PORT", 8000))
+        host = "0.0.0.0"
+        print(f"🚀 Starting PRODUCTION server on {host}:{port}")
+    else:
+        # Local development configuration
+        port = 8000
+        host = "localhost"  # or "127.0.0.1"
+        print(f"💻 Starting LOCAL server on {host}:{port}")
+    
     uvicorn.run(
-        "main:app",  # Use string format for Railway
-        host="0.0.0.0", 
+        "main:app",
+        host=host,
         port=port,
-        reload=False  # Disable reload in production
+        reload=not is_production  # Enable reload only in development
     )

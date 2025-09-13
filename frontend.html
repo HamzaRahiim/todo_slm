@@ -261,7 +261,11 @@
             showLoading();
 
             try {
-                const response = await fetch('http://localhost:8000/chat', {
+                // Smart URL detection for both environments
+                const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+                const baseUrl = isLocal ? 'http://localhost:8000' : window.location.origin;
+                
+                const response = await fetch(`${baseUrl}/chat`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
