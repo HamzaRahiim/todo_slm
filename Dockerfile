@@ -1,17 +1,13 @@
-FROM ollama/ollama:latest
+FROM python:3.11-slim
 
-# Install Python & Supervisor
-RUN apt-get update && apt-get install -y python3 python3-pip supervisor && rm -rf /var/lib/apt/lists/*
+# Install basics
+RUN apt-get update && apt-get install -y curl supervisor && rm -rf /var/lib/apt/lists/*
 
+# Copy your app
 WORKDIR /app
+COPY . /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Supervisor will keep Ollama + your app running
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-COPY . .
-
-COPY supervisord.conf /etc/supervisor/conf.d/app.conf
-
-EXPOSE 8000 11434
-
-CMD ["supervisord", "-c", "/etc/supervisor/conf.d/app.conf"]
+CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
