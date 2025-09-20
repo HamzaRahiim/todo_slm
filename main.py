@@ -7,6 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -270,6 +271,7 @@ async def create_todo(todo: Todo):
         logger.error(f"Error creating todo: {e}")
         raise HTTPException(status_code=400, detail="Failed to create todo")
 
+
 @app.get("/todos", response_model=List[Todo])
 async def get_todos(
     completed: Optional[bool] = None,
@@ -288,13 +290,15 @@ async def get_todos(
     
     return filtered_todos[offset:offset + limit]
 
+
 @app.get("/todos/{todo_id}", response_model=Todo)
 async def get_todo(todo_id: int):
     """Get a specific todo by ID"""
     todo = next((t for t in todos if t.id == todo_id), None)
     if not todo:
-        raise HTTPException(status_code=404, detail=f"Todo with ID {todo_id} not found")
+        raise HTTPException(status_code=404, detail="Todo not found")
     return todo
+
 
 @app.put("/todos/{todo_id}", response_model=Todo)
 async def update_todo(todo_id: int, updated_todo: Todo):
@@ -309,8 +313,8 @@ async def update_todo(todo_id: int, updated_todo: Todo):
             
             logger.info(f"✏️ Updated todo {todo_id}: {updated_todo.title}")
             return todos[i]
-    
-    raise HTTPException(status_code=404, detail=f"Todo with ID {todo_id} not found")
+    raise HTTPException(status_code=404, detail="Todo not found")
+
 
 @app.delete("/todos/{todo_id}")
 async def delete_todo(todo_id: int):
