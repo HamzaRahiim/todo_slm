@@ -1,10 +1,19 @@
 {
-    "$schema": "https://railway.app/railway.schema.json",
-    "build": {
-      "builder": "dockerfile"
-    },
-    "deploy": {
-      "startCommand": "python main.py",
-      "restartPolicyType": "on_failure"
-    }
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "dockerfile",
+    "buildCommand": "echo 'Building with custom Dockerfile'"
+  },
+  "deploy": {
+    "startCommand": "/app/start-production.sh",
+    "restartPolicyType": "on_failure",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 30
+  },
+  "variables": {
+    "ENVIRONMENT": "production",
+    "LOG_LEVEL": "INFO",
+    "MAX_RETRIES": "30",
+    "REQUEST_TIMEOUT": "120"
   }
+}

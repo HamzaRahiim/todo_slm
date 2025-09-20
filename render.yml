@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: ai-todo-app
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: oregon
+    buildCommand: echo "Building with Dockerfile"
+    startCommand: /app/start-production.sh
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: PORT
+        generateValue: true

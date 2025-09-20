@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  ai-todo-app:
+    build: .
+    ports:
+      - "8000:8000"
+      - "11434:11434"
+    environment:
+      - ENVIRONMENT=development
+      - OLLAMA_URL=http://localhost:11434
+      - PHI3_MODEL=phi3:latest
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 2m
