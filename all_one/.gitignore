@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.env
+*.log
+.DS_Store
+static/*.png
+static/*.mp3
+static/*.jpg
+google-credentials.json

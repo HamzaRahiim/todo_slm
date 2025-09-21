@@ -1,205 +1,24 @@
 import os
 import requests
 import time
-import asyncio
-import logging
-from contextlib import asynccontextmanager
+import json
+import re
 from datetime import datetime
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
-import uvicorn
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Configuration
-class Config:
-    OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-    PHI3_MODEL = os.getenv("PHI3_MODEL", "phi3:latest")
-    MAX_RETRIES = int(os.getenv("MAX_RETRIES", "30"))
-    REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "60"))
-    ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
-    PORT = int(os.getenv("PORT", "8000"))
-
-config = Config()
-
-# Global storage
-todos = []
-todo_counter = 1
-
-# Pydantic Models (Fixed for Railway)
-class Todo(BaseModel):
-    id: Optional[int] = None
-    title: str = Field(..., min_length=1, max_length=200)
-    description: Optional[str] = Field(None, max_length=1000)
-    completed: bool = False
-    created_at: Optional[str] = None
-    priority: Optional[str] = "medium"  # Simplified without pattern validation
-
-class ChatRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=2000)
-
-class ChatResponse(BaseModel):
-    response: str
-    model_used: str = "phi3"
-    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
-    processing_time: Optional[float] = None
-    fallback_used: bool = False
-
-# Ollama Service with Fallbacks
-class OllamaService:
-    def __init__(self):
-        self.url = config.OLLAMA_URL
-        self.model = config.PHI3_MODEL
-        self.is_healthy = False
-        self.model_loaded = False
-    
-    async def check_health(self) -> bool:
-        """Check if Ollama is healthy"""
-        try:
-            response = requests.get(f"{self.url}/api/tags", timeout=5)
-            if response.status_code == 200:
-                models = response.json().get("models", [])
-                model_names = [model.get("name", "") for model in models]
-                
-                self.is_healthy = True
-                self.model_loaded = any("phi3" in name.lower() for name in model_names)
-                
-                logger.info(f"✅ Ollama healthy: {len(models)} models, Phi-3: {self.model_loaded}")
-                return True
-        except Exception as e:
-            logger.warning(f"Ollama health check failed: {e}")
-        
-        self.is_healthy = False
-        self.model_loaded = False
-        return False
-    
-    def generate_response(self, prompt: str, system_prompt: str = None) -> tuple[str, float, bool]:
-        """Generate response with fallback to mock responses"""
-        start_time = time.time()
-        
-        # Try real Phi-3 first
-        if self.is_healthy and self.model_loaded:
-            try:
-                full_prompt = f"System: {system_prompt}\n\nUser: {prompt}\n\nAssistant:" if system_prompt else prompt
-                
-                payload = {
-                    "model": self.model,
-                    "prompt": full_prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.7,
-                        "num_ctx": 2048,
-                        "num_predict": 256,
-                        "top_p": 0.9
-                    }
-                }
-                
-                response = requests.post(
-                    f"{self.url}/api/generate",
-                    json=payload,
-                    timeout=config.REQUEST_TIMEOUT
-                )
-                
-                processing_time = time.time() - start_time
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    ai_response = result.get("response", "").strip()
-                    
-                    if ai_response:
-                        logger.info(f"✅ Phi-3 responded in {processing_time:.2f}s")
-                        return ai_response, processing_time, False
-                
-            except Exception as e:
-                logger.warning(f"Phi-3 request failed: {e}")
-        
-        # Fallback to intelligent mock responses
-        processing_time = time.time() - start_time
-        fallback_response = self._generate_fallback_response(prompt)
-        logger.info(f"🔄 Using fallback response in {processing_time:.2f}s")
-        return fallback_response, processing_time, True
-    
-    def _generate_fallback_response(self, prompt: str) -> str:
-        """Intelligent fallback responses"""
-        prompt_lower = prompt.lower()
-        
-        # Todo-related responses
-        if any(word in prompt_lower for word in ["todo", "task", "item"]):
-            if any(word in prompt_lower for word in ["add", "create", "new", "make"]):
-                return "I'd be happy to help you create a new todo! You can add tasks using the /todos endpoint. What would you like to accomplish today?"
-            elif any(word in prompt_lower for word in ["show", "list", "display", "see"]):
-                return f"You currently have {len(todos)} todos in your list. {len([t for t in todos if not t.completed])} are still pending. You can view them all at the /todos endpoint!"
-            elif any(word in prompt_lower for word in ["complete", "done", "finish"]):
-                return "Great job on staying productive! You can mark todos as complete by updating them through the /todos/{id} endpoint. Keep up the excellent work!"
-            elif any(word in prompt_lower for word in ["delete", "remove"]):
-                return "If you need to remove a todo, you can delete it using the API. Sometimes it's good to clean up completed or outdated tasks!"
-        
-        # Productivity advice
-        elif any(word in prompt_lower for word in ["help", "advice", "tip", "productivity"]):
-            tips = [
-                "Here are some productivity tips: 1) Break large tasks into smaller, manageable pieces, 2) Prioritize your most important tasks first, 3) Set realistic deadlines, 4) Take regular breaks to maintain focus!",
-                "For better task management: Use the priority field to organize your todos, group similar tasks together, and celebrate when you complete items!",
-                "Time management tip: Try the Pomodoro Technique - work for 25 minutes, then take a 5-minute break. It's great for maintaining focus!"
-            ]
-            import random
-            return random.choice(tips)
-        
-        # Greetings
-        elif any(word in prompt_lower for word in ["hello", "hi", "hey", "greet"]):
-            return "Hello! I'm your AI todo assistant. I'm currently running in fallback mode, but I can still help you manage your tasks and provide productivity advice. How can I assist you today?"
-        
-        # Default intelligent response
-        else:
-            return f"I understand you're asking about: '{prompt[:100]}...' While I'm running in fallback mode right now, I'm still here to help you manage your todos effectively! You can create, update, and organize your tasks through this API. What would you like to work on?"
-
-# Initialize service
-ollama_service = OllamaService()
-
-# Lifespan management
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("🚀 Starting AI Todo App on Railway...")
-    logger.info(f"Environment: {config.ENVIRONMENT}")
-    logger.info(f"Port: {config.PORT}")
-    
-    # Check Ollama health (don't block startup if it fails)
-    await ollama_service.check_health()
-    
-    if ollama_service.is_healthy:
-        logger.info("✅ Ollama is available")
-        if ollama_service.model_loaded:
-            logger.info("✅ Phi-3 model loaded successfully")
-        else:
-            logger.warning("⚠️ Phi-3 model not loaded, using fallbacks")
-    else:
-        logger.warning("⚠️ Ollama not available, using fallback responses")
-    
-    logger.info("✅ Application startup complete!")
-    
-    yield
-    
-    # Shutdown
-    logger.info("🛑 Shutting down application...")
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 # Create FastAPI app
 app = FastAPI(
-    title="AI Todo App with Phi-3",
-    description="Railway-deployed todo app with AI assistance",
-    version="1.0.0",
-    lifespan=lifespan
+    title="Real AI Todo App with Phi-3",
+    description="A todo app powered by actual Phi-3 model via Ollama",
+    version="2.0.0"
 )
 
-# CORS middleware
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -208,131 +27,362 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routes
-@app.get("/")
-async def root():
-    return {
-        "message": "🤖 AI Todo App with Phi-3",
-        "status": "running",
-        "environment": config.ENVIRONMENT,
-        "endpoints": {
-            "docs": "/docs",
-            "health": "/health",
-            "todos": "/todos",
-            "chat": "/chat"
-        }
-    }
+# Configuration
+OLLAMA_URL = "http://localhost:11434"
+PHI3_MODEL = "phi3:latest"
 
-@app.get("/health")
-async def health_check():
-    """Health check with service status"""
-    # Quick health check
-    ollama_healthy = await ollama_service.check_health()
+# Global storage (in production, you'd use a database)
+todos = []
+todo_counter = 1
+
+# Pydantic Models
+class Todo(BaseModel):
+    id: Optional[int] = None
+    title: str
+    description: Optional[str] = None
+    completed: bool = False
+    created_at: Optional[str] = None
+
+class ChatRequest(BaseModel):
+    message: str
+
+class ChatResponse(BaseModel):
+    response: str
+    model_used: str = "phi3"
+    timestamp: str = datetime.now().isoformat()
+    action_performed: Optional[str] = None
+    todos_affected: Optional[List[Todo]] = None
+
+# Ollama Connection Functions
+def wait_for_ollama(max_retries: int = 60) -> bool:
+    """Wait for Ollama service to be ready"""
+    print("???? Checking Ollama connection...")
     
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "environment": config.ENVIRONMENT,
-        "services": {
-            "fastapi": "healthy",
-            "ollama": "healthy" if ollama_healthy else "degraded",
-            "phi3_model": "loaded" if ollama_service.model_loaded else "fallback"
-        },
-        "app": {
-            "todos_count": len(todos),
-            "port": config.PORT
-        }
-    }
+    for i in range(max_retries):
+        try:
+            response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+            if response.status_code == 200:
+                print(f"✅ Ollama is ready at {OLLAMA_URL}")
+                return True
+        except requests.exceptions.ConnectionError:
+            print(f"⏳ Waiting for Ollama to start... ({i+1}/{max_retries})")
+            time.sleep(2)
+        except Exception as e:
+            print(f"❓ Unexpected error: {e}")
+            time.sleep(2)
+    
+    print("❌ Failed to connect to Ollama after maximum retries")
+    return False
 
+def check_phi3_model() -> bool:
+    """Check if Phi-3 model is available"""
+    try:
+        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=10)
+        if response.status_code == 200:
+            models = response.json().get("models", [])
+            model_names = [model.get("name", "") for model in models]
+            
+            # Check for phi3 model (could be phi3:latest or just phi3)
+            phi3_available = any("phi3" in name.lower() for name in model_names)
+            
+            if phi3_available:
+                print("✅ Phi-3 model is available")
+                return True
+            else:
+                print(f"❌ Phi-3 model not found. Available models: {model_names}")
+                return False
+    except Exception as e:
+        print(f"❌ Error checking Phi-3 model: {e}")
+        return False
+
+def call_phi3(prompt: str, system_prompt: str = None) -> str:
+    """Call the actual Phi-3 model via Ollama"""
+    try:
+        # Construct the full prompt
+        if system_prompt:
+            full_prompt = f"System: {system_prompt}\n\nUser: {prompt}\n\nAssistant:"
+        else:
+            full_prompt = prompt
+
+        # Make request to Ollama
+        payload = {
+            "model": PHI3_MODEL,
+            "prompt": full_prompt,
+            "stream": False,
+            "options": {
+                "temperature": 0.7,
+                "num_ctx": 4096,  # Context length
+                "num_predict": 256,  # Max tokens to generate
+                "top_p": 0.9,
+                "repeat_penalty": 1.1
+            }
+        }
+        
+        print(f"???? Sending request to Phi-3...")
+        response = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json=payload,
+            timeout=60  # 60 seconds timeout
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            ai_response = result.get("response", "").strip()
+            
+            if ai_response:
+                print(f"✅ Phi-3 responded: {ai_response[:50]}...")
+                return ai_response
+            else:
+                return "I apologize, but I couldn't generate a response. Please try again."
+        
+        else:
+            error_msg = f"Ollama API error: {response.status_code} - {response.text}"
+            print(f"❌ {error_msg}")
+            return f"Error: {error_msg}"
+            
+    except requests.exceptions.Timeout:
+        error_msg = "Request to Phi-3 timed out. The model might be processing a complex request."
+        print(f"⏰ {error_msg}")
+        return error_msg
+        
+    except requests.exceptions.ConnectionError:
+        error_msg = "Cannot connect to Ollama. The service might be starting up."
+        print(f"???? {error_msg}")
+        return error_msg
+        
+    except Exception as e:
+        error_msg = f"Unexpected error calling Phi-3: {str(e)}"
+        print(f"???? {error_msg}")
+        return error_msg
+
+# Todo CRUD Operations
 @app.post("/todos", response_model=Todo)
-async def create_todo(todo: Todo):
+def create_todo(todo: Todo):
     """Create a new todo"""
     global todo_counter
     
     new_todo = Todo(
         id=todo_counter,
-        title=todo.title.strip(),
-        description=todo.description.strip() if todo.description else "",
+        title=todo.title,
+        description=todo.description or "",
         completed=False,
-        created_at=datetime.now().isoformat(),
-        priority=todo.priority or "medium"
+        created_at=datetime.now().isoformat()
     )
     
     todos.append(new_todo)
     todo_counter += 1
     
-    logger.info(f"📝 Created todo: {new_todo.title}")
+    print(f"???? Created todo: {new_todo.title}")
     return new_todo
 
 @app.get("/todos", response_model=List[Todo])
-async def get_todos():
+def get_todos():
     """Get all todos"""
     return todos
 
+@app.get("/todos/{todo_id}", response_model=Todo)
+def get_todo(todo_id: int):
+    """Get a specific todo by ID"""
+    todo = next((t for t in todos if t.id == todo_id), None)
+    if not todo:
+        raise HTTPException(status_code=404, detail=f"Todo with ID {todo_id} not found")
+    return todo
+
 @app.put("/todos/{todo_id}", response_model=Todo)
-async def update_todo(todo_id: int, updated_todo: Todo):
+def update_todo(todo_id: int, updated_todo: Todo):
     """Update a todo"""
     for i, todo in enumerate(todos):
         if todo.id == todo_id:
-            todos[i].title = updated_todo.title.strip()
-            todos[i].description = updated_todo.description.strip() if updated_todo.description else ""
+            todos[i].title = updated_todo.title
+            todos[i].description = updated_todo.description or ""
             todos[i].completed = updated_todo.completed
-            todos[i].priority = updated_todo.priority or "medium"
-            
-            logger.info(f"✏️ Updated todo {todo_id}")
+            print(f"✏️ Updated todo {todo_id}: {updated_todo.title}")
             return todos[i]
     
-    raise HTTPException(status_code=404, detail="Todo not found")
+    raise HTTPException(status_code=404, detail=f"Todo with ID {todo_id} not found")
 
+# AI Chat Endpoint
 @app.post("/chat", response_model=ChatResponse)
-async def chat_with_ai(request: ChatRequest):
-    """Chat with AI (Phi-3 or fallback)"""
+def chat_with_phi3(request: ChatRequest):
+    """Chat with Phi-3 for todo management"""
     
-    # Enhanced system prompt
-    system_prompt = f"""You are a helpful AI assistant for todo management. 
+    # System prompt to give Phi-3 context about the todo app
+    system_prompt = f"""You are an AI assistant for a todo application. You help users manage their tasks naturally.
 
-Current system state:
-- Total todos: {len(todos)}
-- Pending: {len([t for t in todos if not t.completed])}
-- Completed: {len([t for t in todos if t.completed])}
+Current todos in the system ({len(todos)} total):
+{chr(10).join([f"- ID {todo.id}: {todo.title} ({'✅ Completed' if todo.completed else '⏳ Pending'})" for todo in todos[-5:]]) if todos else "No todos yet"}
 
-Recent todos: {', '.join([t.title for t in todos[-3:]]) if todos else 'None yet'}
+You can help users with:
+1. Understanding what they want to do with their todos
+2. Providing helpful responses about task management
+3. Giving productivity advice
+4. Being encouraging and supportive
 
-Be helpful, encouraging, and provide practical advice about task management."""
+Please respond naturally and be helpful. If they mention adding, completing, or listing todos, acknowledge their request and be supportive."""
 
-    # Generate response
-    ai_response, processing_time, fallback_used = ollama_service.generate_response(
-        request.message, 
-        system_prompt
-    )
+    # Get AI response
+    ai_response = call_phi3(request.message, system_prompt)
     
-    # Log the interaction
-    logger.info(f"💬 Chat - Fallback: {fallback_used} | Time: {processing_time:.2f}s")
+    # Try to detect if user wants to perform actions (basic intent detection)
+    message_lower = request.message.lower()
+    action_performed = None
+    todos_affected = []
+    
+    # Simple action detection (you can make this more sophisticated)
+    if any(word in message_lower for word in ["add", "create", "new"]) and any(word in message_lower for word in ["todo", "task"]):
+        action_performed = "create_intent_detected"
+    elif any(word in message_lower for word in ["show", "list", "display"]):
+        action_performed = "list_intent_detected"
+        todos_affected = todos.copy()
+    elif any(word in message_lower for word in ["complete", "done", "finish"]):
+        action_performed = "complete_intent_detected"
     
     return ChatResponse(
         response=ai_response,
-        model_used="phi3" if not fallback_used else "phi3-fallback",
-        processing_time=processing_time,
-        fallback_used=fallback_used
+        model_used="phi3",
+        action_performed=action_performed,
+        todos_affected=todos_affected
     )
 
-# Error handlers
-@app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
-    logger.error(f"Global exception: {str(exc)}")
-    return JSONResponse(
-        status_code=500,
-        content={"error": "Internal server error", "detail": "Something went wrong"}
-    )
+# Direct Phi-3 chat endpoint (for testing)
+@app.post("/chat/direct")
+def direct_phi3_chat(message: str):
+    """Direct chat with Phi-3 without todo context"""
+    response = call_phi3(message)
+    
+    return {
+        "user_message": message,
+        "phi3_response": response,
+        "model": "phi3",
+        "timestamp": datetime.now().isoformat()
+    }
+
+# Health and Status Endpoints
+@app.get("/")
+def root():
+    """Root endpoint"""
+    try:
+        return FileResponse('frontend.html')
+    except FileNotFoundError:
+        return {
+            "message": "???? AI Todo App with Phi-3 is running!",
+            "docs": "/docs",
+            "health": "/health",
+            "chat": "/chat"
+        }
+
+@app.get("/health")
+def health_check():
+    """Comprehensive health check"""
+    
+    # Check Ollama connection
+    ollama_status = "unknown"
+    ollama_error = None
+    
+    try:
+        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        if response.status_code == 200:
+            ollama_status = "connected"
+        else:
+            ollama_status = f"error_{response.status_code}"
+    except Exception as e:
+        ollama_status = "disconnected"
+        ollama_error = str(e)
+    
+    # Check Phi-3 model
+    phi3_status = "unknown"
+    phi3_test = None
+    
+    if ollama_status == "connected":
+        phi3_available = check_phi3_model()
+        if phi3_available:
+            # Test Phi-3 with a simple prompt
+            test_response = call_phi3("Say 'Hello from Phi-3!' if you are working correctly.")
+            phi3_test = test_response[:100] + "..." if len(test_response) > 100 else test_response
+            
+            if "hello from phi-3" in test_response.lower() or len(test_response) > 10:
+                phi3_status = "working"
+            else:
+                phi3_status = "responding_but_unclear"
+        else:
+            phi3_status = "model_not_found"
+    else:
+        phi3_status = "ollama_not_connected"
+    
+    return {
+        "status": "healthy" if phi3_status == "working" else "degraded",
+        "timestamp": datetime.now().isoformat(),
+        "environment": "production" if os.environ.get("PORT") else "development",
+        "ollama": {
+            "url": OLLAMA_URL,
+            "status": ollama_status,
+            "error": ollama_error
+        },
+        "phi3": {
+            "model": PHI3_MODEL,
+            "status": phi3_status,
+            "test_response": phi3_test
+        },
+        "app": {
+            "todos_count": len(todos),
+            "port": os.environ.get("PORT", "8000")
+        }
+    }
+
+@app.get("/models")
+def list_models():
+    """List available models in Ollama"""
+    try:
+        response = requests.get(f"{OLLAMA_URL}/api/tags", timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"Failed to get models: {response.status_code}"}
+    except Exception as e:
+        return {"error": f"Cannot connect to Ollama: {str(e)}"}
+
+# Startup Event
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the application on startup"""
+    print("???? Starting AI Todo App with real Phi-3...")
+    print(f"???? Ollama URL: {OLLAMA_URL}")
+    print(f"???? Model: {PHI3_MODEL}")
+    
+    # Wait for Ollama to be ready
+    if wait_for_ollama():
+        # Check if Phi-3 model is available
+        if check_phi3_model():
+            # Test Phi-3
+            print("???? Testing Phi-3 model...")
+            test_response = call_phi3("Hello! Please confirm you are Phi-3 and you are working correctly.")
+            print(f"???? Phi-3 response: {test_response}")
+            print("✅ Phi-3 is ready for production!")
+        else:
+            print("❌ Phi-3 model is not available!")
+            print("???? Make sure 'ollama pull phi3' was successful during container build")
+    else:
+        print("❌ Ollama is not responding!")
+        print("???? Check if Ollama service started correctly in the container")
 
 # Main execution
 if __name__ == "__main__":
-    logger.info(f"🚀 Starting server on port {config.PORT}")
+    import uvicorn
+    
+    # Determine environment
+    is_production = os.environ.get("PORT") is not None
+    port = int(os.environ.get("PORT", 8000))
+    host = "0.0.0.0"
+    
+    if is_production:
+        print(f"???? Starting PRODUCTION server on {host}:{port}")
+    else:
+        print(f"???? Starting DEVELOPMENT server on {host}:{port}")
     
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
-        port=config.PORT,
-        reload=False,
+        host=host,
+        port=port,
+        reload=False,  # Always disable reload in container
         log_level="info"
     )
