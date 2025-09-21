@@ -2,18 +2,17 @@
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
     "builder": "dockerfile",
-    "buildCommand": "echo 'Building with custom Dockerfile'"
+    "buildCommand": "echo 'Building with Railway-compatible Dockerfile'"
   },
   "deploy": {
-    "startCommand": "/app/start-production.sh",
+    "startCommand": "/app/start.sh",
     "restartPolicyType": "on_failure",
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 30
+    "healthcheckTimeout": 100
   },
   "variables": {
     "ENVIRONMENT": "production",
-    "LOG_LEVEL": "INFO",
-    "MAX_RETRIES": "30",
-    "REQUEST_TIMEOUT": "120"
+    "OLLAMA_URL": "http://localhost:11434",
+    "PHI3_MODEL": "phi3:latest"
   }
 }
