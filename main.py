@@ -48,7 +48,7 @@ class Todo(BaseModel):
     description: Optional[str] = Field(None, max_length=1000)
     completed: bool = False
     created_at: Optional[str] = None
-    priority: Optional[str] = Field("medium", regex="^(low|medium|high)$")
+    priority: Optional[str] = Field("medium", pattern="^(low|medium|high)$")
     tags: Optional[List[str]] = Field(default_factory=list)
 
 class ChatRequest(BaseModel):
